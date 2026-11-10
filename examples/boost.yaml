@@ -1,0 +1,85 @@
+# Home Assistant side of the dial's hold-to-boost. Adapt the zone names to yours.
+# Put the timers in configuration.yaml, the script in scripts.yaml and the automation in automations.yaml.
+
+# --- configuration.yaml: one timer per zone (they survive a restart) ---
+timer:
+  boost_hall:
+    name: Hall heating boost
+    icon: mdi:rocket-launch
+    duration: "01:00:00"
+    restore: true
+  # boost_living_room, boost_bedroom, boost_study ... (one per zone)
+
+# --- scripts.yaml ---
+glass_dial_boost:
+  alias: Glass dial boost
+  description: >-
+    Hold the mode icon on a dial to boost that room for an hour; hold again to cancel.
+    Raises the target by `delta` (default 2 C, capped at the zone maximum) in manual,
+    then the automation below returns the zone to its timed programme.
+  icon: mdi:rocket-launch
+  mode: parallel
+  max: 10
+  fields:
+    entity_id:
+      description: The zone's climate entity
+      example: climate.hall
+    timer:
+      description: The zone's boost timer
+      example: timer.boost_hall
+    delta:
+      description: Degrees to add to the current target
+      example: 2
+  sequence:
+  - condition: template
+    value_template: >-
+      {{ entity_id in ['climate.hall'] and timer is string and timer.startswith('timer.') }}
+  - if: "{{ is_state(timer, 'active') }}"
+    then:
+    - action: timer.cancel
+      target:
+        entity_id: "{{ timer }}"
+    - action: climate.set_hvac_mode
+      target:
+        entity_id: "{{ entity_id }}"
+      data:
+        hvac_mode: auto
+    else:
+    - variables:
+        boost: >-
+          {{ [(state_attr(entity_id, 'temperature') | float(18)) + (delta | float(2)),
+          state_attr(entity_id, 'max_temp') | float(30)] | min }}
+    - action: climate.set_hvac_mode
+      target:
+        entity_id: "{{ entity_id }}"
+      data:
+        hvac_mode: heat
+    - action: climate.set_temperature
+      target:
+        entity_id: "{{ entity_id }}"
+      data:
+        temperature: "{{ boost }}"
+    - action: timer.start
+      target:
+        entity_id: "{{ timer }}"
+
+# --- automations.yaml ---
+- id: heating_boost_back_to_timed
+  alias: Heating boost - back to timed
+  triggers:
+  - trigger: event
+    event_type: timer.finished
+  conditions:
+  - condition: template
+    value_template: "{{ trigger.event.data.entity_id.startswith('timer.boost_') }}"
+  actions:
+  - variables:
+      zone: "climate.{{ trigger.event.data.entity_id.split('boost_')[1] }}"
+  - if: "{{ is_state(zone, 'heat') }}"
+    then:
+    - action: climate.set_hvac_mode
+      target:
+        entity_id: "{{ zone }}"
+      data:
+        hvac_mode: auto
+  mode: queued

@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glass Dial Card preview</title>
+<style>
+  body { background:#111827; color:#ddd; font-family:Roboto,sans-serif; margin:0; padding:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
+  ha-card { display:block; background:#1f2937; border-radius:16px; }
+  :root { --primary-text-color:#eee; --secondary-text-color:#aaa; --primary-color:#03a9f4; --secondary-background-color:#374151; }
+  #log { font:12px monospace; margin-top:12px; white-space:pre; }
+</style>
+<script>
+  customElements.define("ha-card", class extends HTMLElement {});
+  customElements.define("ha-icon", class extends HTMLElement {
+    connectedCallback(){ this.textContent = (this.getAttribute("icon")||"").replace("mdi:","").slice(0,4); this.style.fontSize="10px"; }
+  });
+</script>
+<script type="module" src="../dist/glass-dial-card.js"></script>
+</head><body>
+<div class="grid" id="grid"></div>
+<div id="log"></div>
+<script>
+const base = { min_temp:5, max_temp:30, target_temp_step:0.5, hvac_modes:["heat","auto","off"] };
+const states = {
+  "climate.hall": { entity_id:"climate.hall", state:"heat", attributes:{...base, friendly_name:"Hall", current_temperature:19.5, temperature:21, hvac_action:"heating"} },
+  "climate.living_room": { entity_id:"climate.living_room", state:"auto", attributes:{...base, friendly_name:"Living Room", current_temperature:20.5, temperature:17.5, hvac_action:"idle"} },
+  "climate.ac": { entity_id:"climate.ac", state:"cool", attributes:{...base, min_temp:16, max_temp:30, hvac_modes:["cool","heat_cool","off"], friendly_name:"Office AC", current_temperature:26, temperature:23, hvac_action:"cooling"} },
+  "climate.dual": { entity_id:"climate.dual", state:"heat_cool", attributes:{...base, hvac_modes:["heat_cool","off"], friendly_name:"Dual", current_temperature:21, target_temp_low:19, target_temp_high:24, hvac_action:"idle"} },
+  "climate.off": { entity_id:"climate.off", state:"off", attributes:{...base, friendly_name:"Bedroom", current_temperature:16.2, temperature:null, hvac_action:"off"} },
+};
+states["climate.hall"].last_changed = new Date(Date.now() - 3600e3).toISOString();
+states["climate.hall"].attributes.low_battery = true;
+states["climate.living_room"].last_changed = new Date(Date.now() - 86400e3).toISOString();
+states["climate.living_room"].attributes.hvac_action = "heating";
+states["timer.boost_hall"] = { entity_id:"timer.boost_hall", state:"active", attributes:{ finishes_at:new Date(Date.now()+2400e3).toISOString() } };
+states["binary_sensor.heating_not_warming"] = { entity_id:"binary_sensor.heating_not_warming", state:"on", attributes:{ stalled_rooms:["climate.hall","climate.bedroom"] } };
+states["sensor.living_room_valve"] = { entity_id:"sensor.living_room_valve", state:"60", attributes:{} };
+states["sensor.living_room_open_window"] = { entity_id:"sensor.living_room_open_window", state:"open", attributes:{} };
+states["sensor.living_room_next_setpoint"] = { entity_id:"sensor.living_room_next_setpoint", state:"22", last_updated:new Date().toISOString(), attributes:{} };
+states["sensor.living_room_time_to_next_setpoint"] = { entity_id:"sensor.living_room_time_to_next_setpoint", state:"95", last_updated:new Date().toISOString(), attributes:{} };
+const log = (m) => document.getElementById("log").textContent = m + "\n" + document.getElementById("log").textContent;
+const fakeHist = (id) => { const out=[]; const now=Date.now(); let temp=16.5; for (let m=36*60; m>=0; m-=5) { const t=now-m*60000; const hh=new Date(t).getHours()+new Date(t).getMinutes()/60; const heating=(hh>6&&hh<9)||(hh>16&&hh<20.5)||(hh>12&&hh<12.8); temp += heating?0.09:-0.03; temp=Math.min(23,Math.max(15.5,temp)); out.push({ s:"auto", a:{ current_temperature:+temp.toFixed(1), temperature:21, hvac_action: heating?"heating":"idle" }, lu:t/1000 }); } return {[id]: out}; };
+const hass = { callWS: async (msg) => fakeHist(msg.entity_ids[0]), states, config:{ unit_system:{ temperature:"°C" } },
+  callService(d, s, data){ if (d==="script") { log(`script.${s} ${JSON.stringify(data)}`); return Promise.resolve(); } log(`${d}.${s} ${JSON.stringify(data)}`);
+    const e = states[data.entity_id]; const ne = { ...e, attributes:{ ...e.attributes } };
+    if (s==="set_temperature") Object.assign(ne.attributes, data, { temperature: data.temperature ?? ne.attributes.temperature });
+    if (s==="set_hvac_mode") { ne.state = data.hvac_mode; ne.attributes.hvac_action = data.hvac_mode==="off"?"off":ne.attributes.hvac_action; }
+    states[data.entity_id] = ne; push(); return Promise.resolve(); } };
+const cards = [];
+const add = (cfg) => { const c = document.createElement("glass-dial-card"); c.setConfig(cfg); document.getElementById("grid").appendChild(c); cards.push(c); };
+customElements.whenDefined("glass-dial-card").then(() => {
+add({ entity:"climate.hall", image_path:"../dist/img", name:"Hall (boost, manual, warning, low battery)", boost_timer:"timer.boost_hall", warning_entity:"binary_sensor.heating_not_warming" });
+add({ entity:"climate.living_room", image_path:"../dist/img", name:"Living Room (auto, valve, window)", valve_entity:"sensor.living_room_valve", window_entity:"sensor.living_room_open_window", schedule_next:"sensor.living_room_next_setpoint", schedule_time:"sensor.living_room_time_to_next_setpoint" });
+add({ entity:"climate.ac", image_path:"../dist/img" });
+add({ entity:"climate.hall", image_path:"../dist/img", style:"ring", name:"Hall (ring style)" });
+add({ entity:"climate.dual", image_path:"../dist/img", style:"ring" });
+add({ entity:"climate.off", image_path:"../dist/img" });
+function push(){ const h = { ...hass, states:{...states} }; cards.forEach(c => c.hass = h); }
+push();
+});
+</script>
+</body></html>
