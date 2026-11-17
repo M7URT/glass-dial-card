@@ -80,6 +80,7 @@ near its radiator will give short estimates.
 | `entity` | – | Required. A `climate` entity |
 | `name` / `show_name` | friendly name / `true` | Title above the dial |
 | `schedule_next`, `schedule_time` | – | The zone's "next setpoint" and "time to next setpoint" sensors. Enable the schedule and the "next change" message |
+| `bosch_program_entity`, `bosch_program` | – | A sensor whose `programs` attribute lists the weekly programs, and this dial's program id. Gives the dial its exact schedule (see below) |
 | `schedule_entity` | – | Alternative to the two sensors: a Home Assistant **schedule helper** whose blocks carry `data: {temperature: 21}` (see below) |
 | `schedule_idle_entity` | – | `input_number` holding the temperature between the helper's blocks (15 if not set) |
 | `schedule_enabled_entity` | – | Optional `input_boolean` that switches the schedule on and off |
@@ -110,6 +111,12 @@ Most of these can also be set in the visual editor.
 of history** of the two "next setpoint" sensors (each reading says "at now + N minutes the setpoint becomes X"), so it
 works for any thermostat that provides them. Changes made in the thermostat's own app show up after a few days or the
 12-hour refresh.
+
+**Exact programs from the thermostat.** If your integration can read the weekly programs, put them in a sensor attribute and the
+card shows them exactly, with no learning period. The Bosch EasyControl gateway exposes them at `/programs/pgN/week`;
+[`examples/bosch-programs.yaml`](examples/bosch-programs.yaml) is a sensor that reads all of them every two hours.
+Set `bosch_program_entity` and `bosch_program` on each dial. A zone that is held manual while something else applies its
+program also needs `schedule_enabled_entity` so the dial compares its setpoint with the program.
 
 **Schedule from a helper.** For a thermostat with no program of its own, build one in Home Assistant: create a
 Schedule helper (Settings → Devices & services → Helpers), give each block *Additional data* `temperature: 21`, and set

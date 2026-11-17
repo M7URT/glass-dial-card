@@ -1,0 +1,48 @@
+# Reads every weekly program from a Bosch EasyControl gateway (bosch custom integration) into one sensor.
+# Each program point means "from minute t of day d the setpoint is Th". Put this under `template:` in configuration.yaml.
+# Refreshed every 2 hours and shortly after startup; fire the event refresh_bosch_programs to refresh on demand.
+# Replace climate.hall with any entity of the Bosch integration (it is only used to find the gateway device).
+  - triggers:
+      - trigger: homeassistant
+        event: start
+        id: start
+      - trigger: time_pattern
+        hours: "/2"
+        minutes: "7"
+      - trigger: event
+        event_type: refresh_bosch_programs
+    actions:
+      - if: "{{ trigger.id == 'start' }}"
+        then:
+          - delay: "00:02:00"
+      - action: bosch.send_custom_get
+        data:
+          device_id: "{{ device_id('climate.hall') }}"
+          path: /programs/list
+        response_variable: plist
+      - action: bosch.send_custom_get
+        data:
+          device_id: "{{ device_id('climate.hall') }}"
+          path: /programs/pg1/week
+        response_variable: p1
+      # ... repeat for pg2 ... pg7 (one per program in /programs/list), response_variable p2 ... p7
+    sensor:
+      - name: "Bosch weekly programs"
+        unique_id: bosch_weekly_programs
+        icon: mdi:calendar-clock
+        state: "{{ now().isoformat() }}"
+        attributes:
+          programs: >-
+            {%- set resp = [p1] -%}   {# add p2 ... p7 #}
+            {%- set names = plist.data[0].value -%}
+            {%- set ns = namespace(out=[]) -%}
+            {%- for r in resp -%}
+              {%- set pid = loop.index -%}
+              {%- set pname = (names | selectattr('id', 'eq', pid) | map(attribute='name') | first | default('', true)) | base64_decode -%}
+              {%- set pts = namespace(l=[]) -%}
+              {%- for p in r.data[0].value -%}
+                {%- set pts.l = pts.l + [{'d': p.d, 't': p.t, 'Th': p.Th}] -%}
+              {%- endfor -%}
+              {%- set ns.out = ns.out + [{'id': pid, 'name': pname, 'week': pts.l}] -%}
+            {%- endfor -%}
+            {{ ns.out }}

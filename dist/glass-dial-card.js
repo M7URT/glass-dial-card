@@ -25,6 +25,10 @@
  * fisheye: 0.30                  (dome-glass distortion of the display: centre magnified, edges bend; 0 = off)
  * schedule_next: sensor.living_room_next_setpoint      (enables the schedule view; the zone's "next setpoint" sensor)
  * schedule_time: sensor.living_room_time_to_next_setpoint  (the zone's "time to next setpoint" sensor, in minutes)
+ * bosch_program_entity: sensor.bosch_weekly_programs   (a sensor whose `programs` attribute lists the weekly programs,
+ *                                                        [{id, week: [{d: "Mo", t: minute of day, Th: setpoint}]}];
+ *                                                        gives the dial its exact schedule instead of learning it)
+ * bosch_program: 4                                     (which program id belongs to this dial)
  * schedule_entity: schedule.office_heating        (alternative: a Home Assistant schedule helper whose blocks carry
  *                                                  data: {temperature: 21}; the card reads the program from it)
  * schedule_idle_entity: input_number.office_idle   (temperature between the helper's blocks; 15 if not set)
@@ -48,7 +52,7 @@
  * step: 0.5                       (override the entity's target_temp_step)
  */
 
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 // where the layer images live: next to this file (works under /local/ and under HACS)
 const SELF_IMG = (() => {
   try { return new URL("img", import.meta.url).pathname; } catch (e) { return "/local/glass-dial-card/img"; }
@@ -112,6 +116,8 @@ class GlassDialCard extends HTMLElement {
       reflection_blur: 4,
       fisheye: 0.30,
       schedule_next: null,
+      bosch_program_entity: null,
+      bosch_program: null,
       schedule_entity: null,
       schedule_idle_entity: null,
       schedule_enabled_entity: null,
@@ -148,7 +154,7 @@ class GlassDialCard extends HTMLElement {
     this._hass = hass;
     const c = this._config;
     const id = c && c.entity;
-    const watch = c ? [id, c.schedule_next, c.schedule_time, c.schedule_entity, c.schedule_enabled_entity, c.schedule_idle_entity, c.warning_entity, c.window_entity, c.valve_entity, c.boost_timer] : [];
+    const watch = c ? [id, c.schedule_next, c.schedule_time, c.schedule_entity, c.schedule_enabled_entity, c.schedule_idle_entity, c.bosch_program_entity, c.warning_entity, c.window_entity, c.valve_entity, c.boost_timer] : [];
     if (!old || !id || !this._built || watch.some((e) => e && old.states[e] !== hass.states[e])) this._update();
   }
 
@@ -554,7 +560,7 @@ class GlassDialCard extends HTMLElement {
       }
       const est = this._estimate(s, t);
       if (est && t.single != null) items.push({ text: `Reaching ${fmtT(t.single)}° in ~${est}` });
-      if (c.schedule_entity) {
+      if (this._followsProgram()) {
         const pg = this._sched && this._schedOn() && s.state !== "off" ? this._progNow() : null;
         if (pg) {
           const cur = Number(a.temperature);
@@ -714,7 +720,28 @@ class GlassDialCard extends HTMLElement {
   // ---------- weekly schedule view ----------
   _hasSchedule() {
     const c = this._config;
-    return !!(c.schedule_entity || (c.schedule_next && c.schedule_time));
+    return !!(c.schedule_entity || (c.bosch_program_entity && c.bosch_program) || (c.schedule_next && c.schedule_time));
+  }
+
+  // The dial follows a program by itself (the zone is held manual and something else applies the program),
+  // so the ticker and label compare the setpoint with the program instead of using the thermostat's own next-change sensors.
+  _followsProgram() {
+    const c = this._config;
+    return !!(c.schedule_entity || (c.bosch_program_entity && c.schedule_enabled_entity));
+  }
+
+  // Takes this dial's weekly program from the shared programs sensor.
+  _applyBosch() {
+    const c = this._config;
+    const e = this._hass && this._hass.states[c.bosch_program_entity];
+    const progs = e && e.attributes.programs;
+    const prog = Array.isArray(progs) ? progs.find((x) => x.id === Number(c.bosch_program)) : null;
+    if (!prog || !Array.isArray(prog.week)) return;
+    const key = JSON.stringify(prog.week);
+    if (key === this._boschKey) return;
+    this._boschKey = key;
+    const codes = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+    this._sched = codes.map((cd) => prog.week.filter((q) => q.d === cd).sort((x, y) => x.t - y.t).map((q) => ({ t: q.t, temp: q.Th })));
   }
 
   // The program of an HA schedule helper as 7 lists of {t: minute of day, temp}.
@@ -756,7 +783,7 @@ class GlassDialCard extends HTMLElement {
 
   _schedOn() {
     const c = this._config;
-    if (!c.schedule_entity) return false;
+    if (!this._followsProgram()) return false;
     const en = c.schedule_enabled_entity && this._hass.states[c.schedule_enabled_entity];
     return !en || en.state === "on";
   }
@@ -897,6 +924,11 @@ class GlassDialCard extends HTMLElement {
   async _loadSchedule(force) {
     const c = this._config;
     if (!this._hasSchedule() || !this._hass || this._schedLoading) return;
+    if (c.bosch_program_entity && c.bosch_program) {
+      this._applyBosch();
+      this._renderSched();
+      return;
+    }
     if (c.schedule_entity) {
       this._schedLoading = true;
       try {
@@ -1069,6 +1101,7 @@ class GlassDialCard extends HTMLElement {
   _update() {
     if (!this._config || !this._hass) return;
     if (!this._built) this._build();
+    if (this._config.bosch_program_entity && this._config.bosch_program) this._applyBosch();
     if (!this._schedInit && this._hasSchedule()) {
       this._schedInit = true;
       setTimeout(() => this._loadSchedule(), 400 + Math.random() * 2500);
@@ -1555,6 +1588,8 @@ const EDITOR_SCHEMA = [
   { name: "tap_action", selector: { select: { options: ["auto", "schedule", "more-info", "none"] } } },
   {
     type: "expandable", title: "Schedule, ticker and boost", schema: [
+      { name: "bosch_program_entity", selector: { entity: { domain: "sensor" } } },
+      { name: "bosch_program", selector: { number: { min: 1, max: 24, step: 1, mode: "box" } } },
       { name: "schedule_entity", selector: { entity: { domain: "schedule" } } },
       { name: "schedule_idle_entity", selector: { entity: { domain: "input_number" } } },
       { name: "schedule_enabled_entity", selector: { entity: { domain: "input_boolean" } } },
@@ -1587,6 +1622,7 @@ const EDITOR_SCHEMA = [
 ];
 const EDITOR_LABELS = {
   entity: "Thermostat", name: "Name", show_name: "Show the name above the dial", tap_action: "Tap the dial centre",
+  bosch_program_entity: "Weekly programs sensor", bosch_program: "Program number for this dial",
   schedule_entity: "Schedule helper (instead of the two sensors below)", schedule_idle_entity: "Temperature between schedule blocks",
   schedule_enabled_entity: "Schedule on/off switch", schedule_next: "Next setpoint sensor", schedule_time: "Time-to-next-setpoint sensor", warning_entity: "Heating warning sensor",
   window_entity: "Open window sensor", valve_entity: "Valve position sensor", boost_timer: "Boost timer",
