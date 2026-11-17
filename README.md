@@ -80,6 +80,9 @@ near its radiator will give short estimates.
 | `entity` | – | Required. A `climate` entity |
 | `name` / `show_name` | friendly name / `true` | Title above the dial |
 | `schedule_next`, `schedule_time` | – | The zone's "next setpoint" and "time to next setpoint" sensors. Enable the schedule and the "next change" message |
+| `schedule_entity` | – | Alternative to the two sensors: a Home Assistant **schedule helper** whose blocks carry `data: {temperature: 21}` (see below) |
+| `schedule_idle_entity` | – | `input_number` holding the temperature between the helper's blocks (15 if not set) |
+| `schedule_enabled_entity` | – | Optional `input_boolean` that switches the schedule on and off |
 | `warning_entity` | – | A `binary_sensor` that is `on` when heating has a problem. Its `stalled_rooms` attribute (list of entity ids) is used if present |
 | `window_entity` | – | Sensor whose state is not `closed`/`off` when a window is open |
 | `valve_entity` | – | Valve position sensor, 0–100 |
@@ -107,6 +110,12 @@ Most of these can also be set in the visual editor.
 of history** of the two "next setpoint" sensors (each reading says "at now + N minutes the setpoint becomes X"), so it
 works for any thermostat that provides them. Changes made in the thermostat's own app show up after a few days or the
 12-hour refresh.
+
+**Schedule from a helper.** For a thermostat with no program of its own, build one in Home Assistant: create a
+Schedule helper (Settings → Devices & services → Helpers), give each block *Additional data* `temperature: 21`, and set
+`schedule_entity` on the card. The card then reads the whole week directly. Home Assistant only lists helpers made in the
+UI; a schedule defined in YAML cannot be read back as a week. Something still has to apply the temperatures: see
+[`examples/schedule-apply.yaml`](examples/schedule-apply.yaml).
 
 **Boost.** Hold-to-boost needs a timer per zone, a script and an automation: see [`examples/boost.yaml`](examples/boost.yaml).
 The example is written for a thermostat where a manual mode is entered with `hvac_mode: heat`; adapt it to yours.

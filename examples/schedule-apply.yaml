@@ -1,0 +1,37 @@
+# Applies a Schedule helper's temperature to a thermostat. The card only displays the schedule; this does the work.
+# Adapt the entity ids. Blocks carry data: {temperature: 21}; between blocks the thermostat gets the idle temperature.
+- id: schedule_apply_setpoint
+  alias: Thermostat schedule - apply setpoint
+  triggers:
+  - trigger: state
+    entity_id: schedule.office_heating          # fires at every block start and end
+  - trigger: homeassistant
+    event: start
+  - trigger: state
+    entity_id: input_boolean.office_schedule_enabled
+    to: 'on'
+  conditions:
+  - condition: state
+    entity_id: input_boolean.office_schedule_enabled
+    state: 'on'
+  - condition: not
+    conditions:
+    - condition: state
+      entity_id: climate.office
+      state: ['off', unavailable, unknown]
+  actions:
+  - variables:
+      target: >-
+        {% if is_state('schedule.office_heating', 'on') and state_attr('schedule.office_heating', 'temperature') is not none %}
+          {{ state_attr('schedule.office_heating', 'temperature') | float(17) }}
+        {% else %}
+          {{ states('input_number.office_schedule_idle_temp') | float(17) }}
+        {% endif %}
+  - if: "{{ (target | float) != (state_attr('climate.office', 'temperature') | float(0)) }}"
+    then:
+    - action: climate.set_temperature
+      target:
+        entity_id: climate.office
+      data:
+        temperature: "{{ target | float }}"
+  mode: restart

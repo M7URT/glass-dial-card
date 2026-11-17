@@ -25,6 +25,10 @@
  * fisheye: 0.30                  (dome-glass distortion of the display: centre magnified, edges bend; 0 = off)
  * schedule_next: sensor.living_room_next_setpoint      (enables the schedule view; the zone's "next setpoint" sensor)
  * schedule_time: sensor.living_room_time_to_next_setpoint  (the zone's "time to next setpoint" sensor, in minutes)
+ * schedule_entity: schedule.office_heating        (alternative: a Home Assistant schedule helper whose blocks carry
+ *                                                  data: {temperature: 21}; the card reads the program from it)
+ * schedule_idle_entity: input_number.office_idle   (temperature between the helper's blocks; 15 if not set)
+ * schedule_enabled_entity: input_boolean.office_schedule_enabled   (optional on/off switch for the schedule)
  * tap_action: auto | schedule | more-info | none (auto = schedule if the two sensors above are set, else more-info; hold always opens more-info)
  * schedule_idle: 25               (seconds before the schedule view closes itself)
  * warning_entity: binary_sensor.heating_not_warming   (shows the heating warning)
@@ -44,7 +48,7 @@
  * step: 0.5                       (override the entity's target_temp_step)
  */
 
-const VERSION = "2.0.1";
+const VERSION = "2.1.0";
 // where the layer images live: next to this file (works under /local/ and under HACS)
 const SELF_IMG = (() => {
   try { return new URL("img", import.meta.url).pathname; } catch (e) { return "/local/glass-dial-card/img"; }
@@ -108,6 +112,9 @@ class GlassDialCard extends HTMLElement {
       reflection_blur: 4,
       fisheye: 0.30,
       schedule_next: null,
+      schedule_entity: null,
+      schedule_idle_entity: null,
+      schedule_enabled_entity: null,
       schedule_time: null,
       tap_action: "auto",
       schedule_idle: 25,
@@ -141,7 +148,7 @@ class GlassDialCard extends HTMLElement {
     this._hass = hass;
     const c = this._config;
     const id = c && c.entity;
-    const watch = c ? [id, c.schedule_next, c.schedule_time, c.warning_entity, c.window_entity, c.valve_entity, c.boost_timer] : [];
+    const watch = c ? [id, c.schedule_next, c.schedule_time, c.schedule_entity, c.schedule_enabled_entity, c.schedule_idle_entity, c.warning_entity, c.window_entity, c.valve_entity, c.boost_timer] : [];
     if (!old || !id || !this._built || watch.some((e) => e && old.states[e] !== hass.states[e])) this._update();
   }
 
@@ -547,7 +554,19 @@ class GlassDialCard extends HTMLElement {
       }
       const est = this._estimate(s, t);
       if (est && t.single != null) items.push({ text: `Reaching ${fmtT(t.single)}° in ~${est}` });
-      if (s.state === "auto" && c.schedule_next && c.schedule_time) {
+      if (c.schedule_entity) {
+        const pg = this._sched && this._schedOn() && s.state !== "off" ? this._progNow() : null;
+        if (pg) {
+          const cur = Number(a.temperature);
+          if (Math.abs(cur - pg.temp) > 0.01) {
+            items.push({ text: `Changed from schedule · ${fmtT(pg.nextTemp)}° at ${when(pg.nextAt)}` });
+            L.push({ icon: "mdi:hand-back-right", cls: "", title: "Changed from schedule" });
+          } else {
+            const verb = pg.nextTemp > cur ? "Warms to" : pg.nextTemp < cur ? "Drops to" : "Holds until";
+            items.push({ text: verb === "Holds until" ? `Holds until ${when(pg.nextAt)}` : `${verb} ${fmtT(pg.nextTemp)}° at ${when(pg.nextAt)}` });
+          }
+        }
+      } else if (s.state === "auto" && c.schedule_next && c.schedule_time) {
         const nx = H.states[c.schedule_next];
         const tt = H.states[c.schedule_time];
         const nv = nx ? parseFloat(nx.state) : NaN;
@@ -694,7 +713,52 @@ class GlassDialCard extends HTMLElement {
 
   // ---------- weekly schedule view ----------
   _hasSchedule() {
-    return !!(this._config.schedule_next && this._config.schedule_time);
+    const c = this._config;
+    return !!(c.schedule_entity || (c.schedule_next && c.schedule_time));
+  }
+
+  // The program of an HA schedule helper as 7 lists of {t: minute of day, temp}.
+  // Each block sets its temperature at "from" and the idle temperature at "to".
+  static _scheduleFromHelper(item, idle) {
+    const names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    const mins = (str) => {
+      const [h, m] = String(str).split(":").map(Number);
+      return h * 60 + (m || 0);
+    };
+    return names.map((n) => {
+      const map = new Map();
+      for (const b of [...(item[n] || [])].sort((x, y) => mins(x.from) - mins(y.from))) {
+        const temp = b.data ? parseFloat(b.data.temperature) : NaN;
+        if (!(temp > 0)) continue;
+        map.set(mins(b.from), temp);
+        const to = mins(b.to);
+        if (to < 1440 && !map.has(to)) map.set(to, idle);
+      }
+      return [...map.entries()].sort((x, y) => x[0] - y[0]).map(([t, temp]) => ({ t, temp }));
+    });
+  }
+
+  // Where the program is right now: the temperature it wants and the next change.
+  _progNow() {
+    const wk = this._weekPoints();
+    if (!wk.length) return null;
+    const now = new Date();
+    const nowM = ((now.getDay() + 6) % 7) * 1440 + now.getHours() * 60 + now.getMinutes();
+    let prev = wk[wk.length - 1];
+    let next = wk[0];
+    let nextM = wk[0].m + 10080;
+    for (let i = 0; i < wk.length; i++) {
+      if (wk[i].m <= nowM) prev = wk[i];
+      else { next = wk[i]; nextM = wk[i].m; break; }
+    }
+    return { temp: prev.temp, nextTemp: next.temp, nextAt: new Date(now.getTime() + (nextM - nowM) * 60000) };
+  }
+
+  _schedOn() {
+    const c = this._config;
+    if (!c.schedule_entity) return false;
+    const en = c.schedule_enabled_entity && this._hass.states[c.schedule_enabled_entity];
+    return !en || en.state === "on";
   }
 
   _centerTap() {
@@ -833,6 +897,23 @@ class GlassDialCard extends HTMLElement {
   async _loadSchedule(force) {
     const c = this._config;
     if (!this._hasSchedule() || !this._hass || this._schedLoading) return;
+    if (c.schedule_entity) {
+      this._schedLoading = true;
+      try {
+        const list = await this._hass.callWS({ type: "schedule/list" });
+        const item = (list || []).find((x) => x.id === c.schedule_entity.split(".")[1]);
+        const ie = c.schedule_idle_entity && this._hass.states[c.schedule_idle_entity];
+        const idle = ie && !isNaN(parseFloat(ie.state)) ? parseFloat(ie.state) : 15;
+        this._sched = item ? GlassDialCard._scheduleFromHelper(item, idle) : null;
+      } catch (err) {
+        console.warn("glass-dial-card: could not read the schedule helper", err);
+      } finally {
+        this._schedLoading = false;
+        this._renderSched();
+        if (this._el) this._update();
+      }
+      return;
+    }
     const key = "glass-dial-sched:" + c.entity;
     if (!force) {
       try {
@@ -1082,7 +1163,10 @@ class GlassDialCard extends HTMLElement {
     else if (action === "cooling") label = "";
     else if (s.state === "heat_cool") label = "Heat · Cool";
     else if (s.state === "auto") label = "Schedule";
-    else if (s.state === "heat") label = "Set";
+    else if (s.state === "heat") {
+      const pg = this._sched && this._schedOn() ? this._progNow() : null;
+      label = pg && Math.abs(Number(a.temperature) - pg.temp) < 0.01 ? "Schedule" : "Set";
+    }
     else if (s.state === "cool") label = "Set";
     else label = s.state.replace(/_/g, " ");
     el.label.textContent = label;
@@ -1471,6 +1555,9 @@ const EDITOR_SCHEMA = [
   { name: "tap_action", selector: { select: { options: ["auto", "schedule", "more-info", "none"] } } },
   {
     type: "expandable", title: "Schedule, ticker and boost", schema: [
+      { name: "schedule_entity", selector: { entity: { domain: "schedule" } } },
+      { name: "schedule_idle_entity", selector: { entity: { domain: "input_number" } } },
+      { name: "schedule_enabled_entity", selector: { entity: { domain: "input_boolean" } } },
       { name: "schedule_next", selector: { entity: { domain: "sensor" } } },
       { name: "schedule_time", selector: { entity: { domain: "sensor" } } },
       { name: "warning_entity", selector: { entity: { domain: "binary_sensor" } } },
@@ -1500,7 +1587,8 @@ const EDITOR_SCHEMA = [
 ];
 const EDITOR_LABELS = {
   entity: "Thermostat", name: "Name", show_name: "Show the name above the dial", tap_action: "Tap the dial centre",
-  schedule_next: "Next setpoint sensor", schedule_time: "Time-to-next-setpoint sensor", warning_entity: "Heating warning sensor",
+  schedule_entity: "Schedule helper (instead of the two sensors below)", schedule_idle_entity: "Temperature between schedule blocks",
+  schedule_enabled_entity: "Schedule on/off switch", schedule_next: "Next setpoint sensor", schedule_time: "Time-to-next-setpoint sensor", warning_entity: "Heating warning sensor",
   window_entity: "Open window sensor", valve_entity: "Valve position sensor", boost_timer: "Boost timer",
   boost_delta: "Boost: degrees to add", manual_revert_hours: "Manual returns to timed after (hours, 0 = never)",
   ticker: "Show the message ticker", badges: "Show status icons", haptics: "Vibrate while scrolling",
